@@ -1,0 +1,71 @@
+# .github/workflows/deploy-prod.yml
+#
+# This pipeline runs automatically when a Pull Request is merged into main.
+# It runs tests, then deploys to prod AWS environment.
+#
+# Key difference from dev pipeline:
+# - Only triggers on main branch (not dev)
+# - Uses StageName=prod
+# - Deploys to stack task-api-prod (separate from task-api-dev)
+
+name: Deploy to Prod
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy-prod:
+    name: Build, Test and Deploy (Prod)
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install SAM CLI
+        run: pip install aws-sam-cli
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      # In prod pipeline: tests are mandatory. No skip option.
+      - name: Run unit tests
+        run: |
+          pip install pytest boto3
+          pytest tests/ -v --tb=short
+
+      - name: SAM Build
+        run: sam build --template-file template.yaml
+
+      # Deploy to prod stack - separate from dev so they never interfere
+      - name: SAM Deploy to Prod
+        run: |
+          sam deploy \
+            --stack-name task-api-prod \
+            --region ${{ secrets.AWS_REGION }} \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides StageName=prod \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --resolve-s3
+
+      - name: Print prod API endpoint
+        run: |
+          echo "Prod deployment complete."
+          aws cloudformation describe-stacks \
+            --stack-name task-api-prod \
+            --region ${{ secrets.AWS_REGION }} \
+            --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue" \
+            --output text

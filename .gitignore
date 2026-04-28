@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# SAM build output - never commit this
+.aws-sam/
+samconfig.toml
+
+# AWS credentials - NEVER commit these
+.aws/
+*.pem
+*.env
+.env.*
+
+# Test output
+.pytest_cache/
+coverage/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

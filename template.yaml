@@ -1,0 +1,212 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'Project 2 - Serverless Task Manager API (Lambda + API Gateway + DynamoDB)'
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 30
+    MemorySize: 256
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref TasksTable
+        LOG_LEVEL: INFO
+    Tags:
+      Project: serverless-task-api
+
+Parameters:
+  StageName:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, staging, prod]
+
+Resources:
+
+  # ── DynamoDB Table ─────────────────────────────────────────────────────────
+  TasksTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub 'tasks-${StageName}'
+      BillingMode: PAY_PER_REQUEST    # On-demand = no capacity planning needed
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: taskId
+          AttributeType: S
+        - AttributeName: status
+          AttributeType: S
+        - AttributeName: createdAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: taskId
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: StatusIndex
+          KeySchema:
+            - AttributeName: status
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      Tags:
+        - Key: Project
+          Value: serverless-task-api
+
+  # ── IAM Role for all Lambda functions ─────────────────────────────────────
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'task-api-lambda-role-${StageName}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource:
+                  - !GetAtt TasksTable.Arn
+                  - !Sub '${TasksTable.Arn}/index/*'
+
+  # ── Lambda Functions ───────────────────────────────────────────────────────
+  CreateTaskFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'task-api-create-${StageName}'
+      CodeUri: src/
+      Handler: create_task.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Description: Creates a new task for a user
+      Events:
+        CreateTask:
+          Type: Api
+          Properties:
+            RestApiId: !Ref TaskApi
+            Path: /tasks
+            Method: POST
+
+  ListTasksFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'task-api-list-${StageName}'
+      CodeUri: src/
+      Handler: list_tasks.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Description: Lists all tasks for a user
+      Events:
+        ListTasks:
+          Type: Api
+          Properties:
+            RestApiId: !Ref TaskApi
+            Path: /tasks
+            Method: GET
+
+  GetTaskFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'task-api-get-${StageName}'
+      CodeUri: src/
+      Handler: get_task.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Description: Gets a specific task by ID
+      Events:
+        GetTask:
+          Type: Api
+          Properties:
+            RestApiId: !Ref TaskApi
+            Path: /tasks/{taskId}
+            Method: GET
+
+  UpdateTaskFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'task-api-update-${StageName}'
+      CodeUri: src/
+      Handler: update_task.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Description: Updates a task status or title
+      Events:
+        UpdateTask:
+          Type: Api
+          Properties:
+            RestApiId: !Ref TaskApi
+            Path: /tasks/{taskId}
+            Method: PUT
+
+  DeleteTaskFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'task-api-delete-${StageName}'
+      CodeUri: src/
+      Handler: delete_task.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Description: Deletes a task
+      Events:
+        DeleteTask:
+          Type: Api
+          Properties:
+            RestApiId: !Ref TaskApi
+            Path: /tasks/{taskId}
+            Method: DELETE
+
+  # ── API Gateway REST API ───────────────────────────────────────────────────
+  TaskApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub 'task-api-${StageName}'
+      StageName: !Ref StageName
+      Cors:
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-User-Id,Authorization'"
+        AllowOrigin: "'*'"
+      AccessLogSetting:
+        DestinationArn: !GetAtt ApiLogGroup.Arn
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          ThrottlingBurstLimit: 100
+          ThrottlingRateLimit: 50
+          LoggingLevel: ERROR
+          MetricsEnabled: true
+
+  # ── CloudWatch Log Group ───────────────────────────────────────────────────
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/api-gateway/task-api-${StageName}'
+      RetentionInDays: 7
+
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway base URL
+    Value: !Sub 'https://${TaskApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}'
+    Export:
+      Name: !Sub 'task-api-endpoint-${StageName}'
+
+  DynamoDBTable:
+    Description: DynamoDB table name
+    Value: !Ref TasksTable
+
+  ApiId:
+    Description: API Gateway ID
+    Value: !Ref TaskApi

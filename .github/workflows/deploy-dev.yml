@@ -1,0 +1,81 @@
+# .github/workflows/deploy-dev.yml
+#
+# This pipeline runs automatically every time you push to the dev branch.
+# It builds and deploys the API to the dev AWS environment.
+#
+# Real world note: In a real team this would also Slack-notify the team,
+# post the deployment URL as a PR comment, and run integration tests.
+
+name: Deploy to Dev
+
+on:
+  push:
+    branches:
+      - dev
+
+jobs:
+  deploy-dev:
+    name: Build and Deploy (Dev)
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # Step 1: Check out your code onto the GitHub Actions VM
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Python so SAM can package your Lambda functions
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Step 3: Install AWS SAM CLI on the GitHub Actions VM
+      - name: Install SAM CLI
+        run: pip install aws-sam-cli
+
+      # Step 4: Configure AWS credentials from GitHub Secrets
+      # These secrets are set in GitHub repo Settings > Secrets
+      # The VM gets temporary access to your AWS account - no keys in code
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      # Step 5: Run unit tests before deploying anything
+      # If tests fail, deployment stops here - broken code never reaches AWS
+      - name: Run unit tests
+        run: |
+          pip install pytest boto3
+          pytest tests/ -v --tb=short
+        continue-on-error: false
+
+      # Step 6: SAM Build - packages your Python Lambda functions
+      - name: SAM Build
+        run: sam build --template-file template.yaml
+
+      # Step 7: SAM Deploy to dev environment
+      # --no-confirm-changeset means it deploys without asking yes/no
+      # --resolve-s3 means SAM creates/manages its own S3 bucket for artifacts
+      - name: SAM Deploy to Dev
+        run: |
+          sam deploy \
+            --stack-name task-api-dev \
+            --region ${{ secrets.AWS_REGION }} \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides StageName=dev \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --resolve-s3
+
+      # Step 8: Print the live API URL so you can see it in the Actions log
+      - name: Print API endpoint
+        run: |
+          echo "Dev API deployed successfully."
+          aws cloudformation describe-stacks \
+            --stack-name task-api-dev \
+            --region ${{ secrets.AWS_REGION }} \
+            --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue" \
+            --output text
